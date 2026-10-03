@@ -322,15 +322,8 @@ struct MessageBubbleView: View {
 
                 // Message content (with reasoning and tool call HTML stripped)
                 if cachedParsed.visibleContent.isEmpty && isStreaming {
-                    HStack(spacing: 4) {
-                        ForEach(0..<3, id: \.self) { _ in
-                            Circle()
-                                .fill(AppColors.textTertiary)
-                                .frame(width: 6, height: 6)
-                                .opacity(0.6)
-                        }
-                    }
-                    .padding(.top, 4)
+                    TypingIndicator()
+                        .padding(.top, 4)
                 } else if !cachedParsed.visibleContent.isEmpty {
                     MarkdownTextView(content: cachedParsed.visibleContent, sources: message.sources)
                 }
@@ -655,6 +648,7 @@ private struct ReasoningBlockView: View {
                     Text(headerText)
                         .font(AppFont.caption(size: 12).weight(.medium))
                         .foregroundStyle(AppColors.textSecondary)
+                        .pulsing(active: !block.isDone)
 
                     if !block.content.isEmpty {
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
@@ -1236,4 +1230,60 @@ private struct FollowUpChipsView: View {
         }
         .padding(.top, 4)
     }
+}
+
+// MARK: - Typing Indicator
+
+/// Animated "assistant is responding" indicator shown before the first visible token
+/// arrives. Three dots rise and fade in a staggered wave. Driven by `TimelineView` so it
+/// animates smoothly without relying on `@State` toggles that can reset while streaming.
+struct TypingIndicator: View {
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let now = timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { i in
+                    let p = Self.phase(now, index: i)
+                    Circle()
+                        .fill(AppColors.textTertiary)
+                        .frame(width: 6, height: 6)
+                        .opacity(0.35 + 0.65 * p)
+                        .offset(y: -3 * p)
+                }
+            }
+        }
+        .accessibilityLabel(Text("message.thinking"))
+    }
+
+    private static func phase(_ now: TimeInterval, index: Int) -> Double {
+        let rate = 1.3            // cycles per second
+        let stagger = 0.18        // seconds between successive dots
+        let v = sin((now - Double(index) * stagger) * rate * 2 * .pi)
+        return max(0, v)          // bounce only on the upswing (0...1)
+    }
+}
+
+// MARK: - Pulsing Text
+
+/// A gentle opacity "breathing" effect for in-progress labels (e.g. the streaming
+/// "Thinking…" reasoning header), echoing the Open WebUI web client's shimmer. Driven by
+/// `TimelineView` so no `@State` is needed. A no-op when `active` is false.
+private struct PulsingTextModifier: ViewModifier {
+    var active: Bool
+    func body(content: Content) -> some View {
+        if active {
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let p = (sin(t * 2.2) + 1) / 2       // 0...1
+                content.opacity(0.5 + 0.5 * p)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    /// Apply a gentle opacity pulse while `active` (used on streaming "Thinking…" labels).
+    func pulsing(active: Bool) -> some View { modifier(PulsingTextModifier(active: active)) }
 }
