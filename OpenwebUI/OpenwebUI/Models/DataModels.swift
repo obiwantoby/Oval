@@ -274,6 +274,7 @@ struct ModelCapabilities: Codable, Hashable {
     let web_search: Bool?
     let image_generation: Bool?
     let code_interpreter: Bool?
+    let memory: Bool?
 }
 
 struct SuggestionPrompt: Codable, Hashable {
@@ -591,6 +592,23 @@ struct StreamOptions: Codable {
     let include_usage: Bool?
 }
 
+/// A tool available on the server, from `GET /api/v1/tools/`. Covers user-registered Python
+/// tools and external MCP tool servers (whose `id` looks like `server:mcp:kagi`).
+struct OWUITool: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let meta: Meta?
+
+    struct Meta: Codable, Hashable {
+        let description: String?
+    }
+
+    var toolDescription: String? { meta?.description }
+
+    static func == (lhs: OWUITool, rhs: OWUITool) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
 struct ChatCompletionRequest: Codable {
     let model: String
     let messages: [CompletionMessage]
@@ -599,6 +617,9 @@ struct ChatCompletionRequest: Codable {
     let max_tokens: Int?
     /// File IDs to include (for non-image files uploaded via /api/v1/files/)
     let files: [CompletionFileRef]?
+    /// IDs of tools the model may call this turn (from GET /api/v1/tools/). Includes MCP tool
+    /// servers like "server:mcp:kagi". Omitted when empty.
+    let tool_ids: [String]?
     /// Feature flags (web search, image gen, etc.)
     let features: ChatFeatures?
     /// Socket.IO session ID — when set, server routes events via Socket.IO instead of SSE
@@ -615,7 +636,7 @@ struct ChatCompletionRequest: Codable {
     let stream_options: StreamOptions?
 
     init(model: String, messages: [CompletionMessage], stream: Bool, temperature: Double?, max_tokens: Int?,
-         files: [CompletionFileRef]? = nil, features: ChatFeatures? = nil,
+         files: [CompletionFileRef]? = nil, tool_ids: [String]? = nil, features: ChatFeatures? = nil,
          session_id: String? = nil, chat_id: String? = nil,
          id: String? = nil, parent_id: String? = nil, parent_message: [String: String]? = nil,
          stream_options: StreamOptions? = nil) {
@@ -625,6 +646,7 @@ struct ChatCompletionRequest: Codable {
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.files = files
+        self.tool_ids = tool_ids
         self.features = features
         self.session_id = session_id
         self.chat_id = chat_id

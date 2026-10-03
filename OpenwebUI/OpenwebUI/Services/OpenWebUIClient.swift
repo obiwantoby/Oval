@@ -101,6 +101,14 @@ final class OpenWebUIClient: Sendable {
         return resp.data ?? []
     }
 
+    // MARK: - Tools
+
+    /// List tools available to the current user (`GET /api/v1/tools/`). Includes
+    /// server-registered Python tools and external MCP tool servers (e.g. `server:mcp:kagi`).
+    func listTools() async throws -> [OWUITool] {
+        try await get("/api/v1/tools/")
+    }
+
     // MARK: - Chats
 
     func listChats(page: Int = 1) async throws -> [ChatListItem] {
@@ -330,6 +338,10 @@ final class OpenWebUIClient: Sendable {
         temperature: Double = 0.7,
         files: [CompletionFileRef]? = nil,
         webSearch: Bool = false,
+        toolIds: [String]? = nil,
+        imageGeneration: Bool = false,
+        codeInterpreter: Bool = false,
+        memory: Bool = false,
         sessionId: String? = nil,
         chatId: String? = nil,
         messageId: String? = nil,
@@ -358,7 +370,13 @@ final class OpenWebUIClient: Sendable {
                 req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-                let features = webSearch ? ChatFeatures(web_search: true) : nil
+                let anyFeature = webSearch || imageGeneration || codeInterpreter || memory
+                let features = anyFeature ? ChatFeatures(
+                    web_search: webSearch ? true : nil,
+                    image_generation: imageGeneration ? true : nil,
+                    memory: memory ? true : nil,
+                    code_interpreter: codeInterpreter ? true : nil
+                ) : nil
                 let body = ChatCompletionRequest(
                     model: model,
                     messages: messages,
@@ -366,6 +384,7 @@ final class OpenWebUIClient: Sendable {
                     temperature: temperature,
                     max_tokens: nil,
                     files: files,
+                    tool_ids: (toolIds?.isEmpty == false) ? toolIds : nil,
                     features: features,
                     session_id: sessionId,
                     chat_id: chatId,
