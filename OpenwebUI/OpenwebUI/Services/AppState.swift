@@ -1477,6 +1477,17 @@ final class AppState {
             guard isValidMessage else { return }
             handleResponsesEvent(chatId: chatId, data: data)
 
+        // ── Server asked the client to re-fetch the chat ──
+        // Used to surface messages the server injected out of band — notably background
+        // sub-agent ("research agent") results, which are written to history and announced
+        // via chat:reload. Skip while actively streaming this chat so we don't clobber the
+        // live streaming message; a later refresh/selection will pick it up.
+        case "chat:reload":
+            guard !streamingChatIDs.contains(chatId) else { break }
+            Task { @MainActor [weak self] in
+                await self?.refreshChatMessages(chatId, silent: true)
+            }
+
         // ── Turn-level active flag (OWUI 0.11+) ──
         // `active:false` is the server's authoritative "whole turn finished" signal and the
         // safety net that ends the stream if a terminal `chat:completion {done:true}` is missed.
