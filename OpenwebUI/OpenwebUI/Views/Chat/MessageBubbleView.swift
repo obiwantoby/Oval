@@ -81,7 +81,9 @@ struct MessageBubbleView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if message.role == "user" {
+            if message.meta?.isSubagentResult == true {
+                SubagentResultRow(message: message)
+            } else if message.role == "user" {
                 Spacer(minLength: 80)
                 userMessage
             } else {
@@ -1286,4 +1288,85 @@ private struct PulsingTextModifier: ViewModifier {
 extension View {
     /// Apply a gentle opacity pulse while `active` (used on streaming "Thinking…" labels).
     func pulsing(active: Bool) -> some View { modifier(PulsingTextModifier(active: active)) }
+}
+
+// MARK: - Subagent Result Row
+
+/// Renders a background sub-agent ("research agent") result that Open WebUI injected into the
+/// chat. The server writes a message with `meta.type == "subagent"` whose content is a block:
+///
+///     [ASYNC SUBAGENT COMPLETE - deleg_xxxx]
+///     Subagent chat: <id>
+///     Status: completed  Duration: ...
+///     --- RESULT ---
+///     <the sub-agent's answer>
+///
+/// Shown as a collapsible row with a one-line summary, expandable to the full result.
+private struct SubagentResultRow: View {
+    let message: ChatMessage
+    @State private var expanded = false
+
+    private var resultText: String {
+        if let range = message.content.range(of: "--- RESULT ---") {
+            return String(message.content[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Fall back to dropping the bracketed header lines.
+        return message.content
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .drop(while: { $0.hasPrefix("[") || $0.hasPrefix("Subagent chat:") || $0.hasPrefix("Status:") })
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var summary: String {
+        resultText.split(separator: "\n").first.map(String.init) ?? "Sub-agent finished"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppColors.accentBlue)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Background sub-agent finished")
+                            .font(AppFont.caption(size: 12).weight(.semibold))
+                            .foregroundStyle(AppColors.textSecondary)
+                        if !expanded {
+                            Text(summary)
+                                .font(AppFont.caption(size: 11))
+                                .foregroundStyle(AppColors.textTertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(AppColors.textTertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                Divider().padding(.horizontal, 12)
+                MarkdownTextView(content: resultText, sources: nil)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(AppColors.fileAttachmentBg.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(AppColors.borderColor.opacity(0.5), lineWidth: 0.5)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }

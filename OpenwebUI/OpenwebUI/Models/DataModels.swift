@@ -446,6 +446,9 @@ struct ChatMessage: Identifiable, Equatable {
     var messageError: ChatMessageError?
     /// Server-generated files (images from image generation, tool output files)
     var serverFiles: [[String: Any]]?
+    /// Server message metadata. For background sub-agent ("research agent") results the server
+    /// injects a message with `meta.internal == true` and `meta.type == "subagent"`.
+    var meta: MessageMeta?
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id && lhs.content == rhs.content && lhs.role == rhs.role &&
@@ -455,8 +458,27 @@ struct ChatMessage: Identifiable, Equatable {
         lhs.statusHistory == rhs.statusHistory &&
         lhs.codeExecutions == rhs.codeExecutions &&
         lhs.followUps == rhs.followUps && lhs.usage == rhs.usage &&
-        lhs.messageError == rhs.messageError
+        lhs.messageError == rhs.messageError && lhs.meta == rhs.meta
     }
+}
+
+/// Server message metadata. Used to recognise internal sub-agent (task-delegation) result
+/// messages, which Open WebUI injects into the parent chat history.
+struct MessageMeta: Codable, Equatable {
+    var isInternal: Bool?
+    var type: String?
+    var delegationId: String?
+    var subagentChatId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case isInternal = "internal"
+        case type
+        case delegationId = "delegation_id"
+        case subagentChatId = "subagent_chat_id"
+    }
+
+    /// True for a background sub-agent result message.
+    var isSubagentResult: Bool { isInternal == true && type == "subagent" }
 }
 
 extension ChatMessage: Codable {
@@ -465,6 +487,7 @@ extension ChatMessage: Codable {
         case images, files, toolCalls, toolCallId, statusHistory
         case sources, codeExecutions = "code_executions", followUps, usage
         case messageError = "error"
+        case meta
     }
 
     init(from decoder: Decoder) throws {
@@ -496,6 +519,7 @@ extension ChatMessage: Codable {
         followUps = try c.decodeIfPresent([String].self, forKey: .followUps)
         usage = (try? c.decodeIfPresent(TokenUsage.self, forKey: .usage)) ?? nil
         messageError = (try? c.decodeIfPresent(ChatMessageError.self, forKey: .messageError)) ?? nil
+        meta = (try? c.decodeIfPresent(MessageMeta.self, forKey: .meta)) ?? nil
         // serverFiles is not Codable — populated at runtime from Socket.IO events
         serverFiles = nil
     }
@@ -519,6 +543,7 @@ extension ChatMessage: Codable {
         try c.encodeIfPresent(followUps, forKey: .followUps)
         try c.encodeIfPresent(usage, forKey: .usage)
         try c.encodeIfPresent(messageError, forKey: .messageError)
+        try c.encodeIfPresent(meta, forKey: .meta)
         // serverFiles is not encoded — runtime only
     }
 }
