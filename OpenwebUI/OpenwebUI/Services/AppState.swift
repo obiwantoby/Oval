@@ -378,6 +378,29 @@ final class AppState {
     // MARK: - Features
 
     var isWebSearchEnabled: Bool = false
+    /// Built-in feature toggles sent as `features.*` in the chat request. Shown in the input
+    /// bar only when the selected model advertises the capability (`info.meta.capabilities`).
+    var isImageGenerationEnabled: Bool = false
+    var isCodeInterpreterEnabled: Bool = false
+    var isMemoryEnabled: Bool = false
+
+    /// Tools available on the server (`GET /api/v1/tools/`), fetched on connect. Includes MCP
+    /// tool servers such as Kagi.
+    var availableTools: [OWUITool] = []
+    /// IDs of tools the user has enabled for the next message (sent as `tool_ids`).
+    var selectedToolIds: Set<String> = []
+
+    /// Feature flags to actually send, masked by the selected model's advertised capabilities
+    /// so a toggle left on from a previous model is never sent to one that lacks it.
+    var effectiveFeatureFlags: (web: Bool, image: Bool, code: Bool, memory: Bool) {
+        let caps = selectedModel?.info?.meta?.capabilities
+        return (
+            web: isWebSearchEnabled && (caps?.web_search ?? true),
+            image: isImageGenerationEnabled && (caps?.image_generation ?? false),
+            code: isCodeInterpreterEnabled && (caps?.code_interpreter ?? false),
+            memory: isMemoryEnabled && (caps?.memory ?? false)
+        )
+    }
 
     // MARK: - Server Tool Dialogs (ack-based)
 
@@ -1001,7 +1024,8 @@ final class AppState {
                 async let modelsResult: () = loadModels()
                 async let chatsResult: () = loadConversations()
                 async let userResult: () = loadUser()
-                _ = await (modelsResult, chatsResult, userResult)
+                async let toolsResult: () = loadTools()
+                _ = await (modelsResult, chatsResult, userResult, toolsResult)
             } else {
                 // Token expired for this server
                 prefillConnectFields(from: server)
@@ -1686,6 +1710,17 @@ final class AppState {
     }
 
     // MARK: - Models
+
+    /// Fetch the server's available tools (MCP tool servers + registered tools) for the picker.
+    func loadTools() async {
+        guard let client else { return }
+        do {
+            availableTools = try await client.listTools()
+        } catch {
+            ovalLog.error("[Oval] Failed to load tools: \(error.localizedDescription)")
+            availableTools = []
+        }
+    }
 
     func loadModels() async {
         guard let client else { return }
@@ -2422,7 +2457,8 @@ final class AppState {
         // Move this conversation to the top of the sidebar immediately
         bumpConversationToTop(chatId: chatId)
 
-        let webSearchEnabled = isWebSearchEnabled
+        let featureFlags = effectiveFeatureFlags
+        let selectedTools = selectedToolIds.isEmpty ? nil : Array(selectedToolIds)
 
         // Capture Socket.IO session ID so the server routes events through the socket
         // instead of SSE. This is critical for native tool calling — the server sends
@@ -2445,7 +2481,11 @@ final class AppState {
                     model: model.id,
                     messages: completionMsgs,
                     files: fileRefs,
-                    webSearch: webSearchEnabled,
+                    webSearch: featureFlags.web,
+                    toolIds: selectedTools,
+                    imageGeneration: featureFlags.image,
+                    codeInterpreter: featureFlags.code,
+                    memory: featureFlags.memory,
                     sessionId: socketSessionId,
                     chatId: socketSessionId != nil ? chatId : nil,
                     messageId: assistantId,
@@ -2768,7 +2808,8 @@ final class AppState {
             bumpConversationToTop(chatId: chatId)
 
             let completionMsgs = Self.buildCompletionMessages(from: chatMessages)
-            let webSearchEnabled = isWebSearchEnabled
+            let featureFlags = effectiveFeatureFlags
+            let selectedTools = selectedToolIds.isEmpty ? nil : Array(selectedToolIds)
             let editSocketSessionId = socketSessionIdForStreaming
             // Capture at send time to avoid race with saveTemporaryChat() during streaming
             let isTempChat = isTemporaryChat
@@ -2781,7 +2822,11 @@ final class AppState {
                         model: model.id,
                         messages: completionMsgs,
                         files: nil,
-                        webSearch: webSearchEnabled,
+                        webSearch: featureFlags.web,
+                        toolIds: selectedTools,
+                        imageGeneration: featureFlags.image,
+                        codeInterpreter: featureFlags.code,
+                        memory: featureFlags.memory,
                         sessionId: editSocketSessionId,
                         chatId: editSocketSessionId != nil ? chatId : nil,
                         messageId: assistantId,
@@ -2951,7 +2996,8 @@ final class AppState {
         bumpConversationToTop(chatId: chatId)
 
         let completionMsgs = Self.buildCompletionMessages(from: Array(chatMessages.dropLast()))
-        let webSearchEnabled = isWebSearchEnabled
+        let featureFlags = effectiveFeatureFlags
+        let selectedTools = selectedToolIds.isEmpty ? nil : Array(selectedToolIds)
         let regenSocketSessionId = socketSessionIdForStreaming
         // Capture at send time to avoid race with saveTemporaryChat() during streaming
         let isTempChat = isTemporaryChat
@@ -2964,7 +3010,11 @@ final class AppState {
                     model: model.id,
                     messages: completionMsgs,
                     files: nil,
-                    webSearch: webSearchEnabled,
+                    webSearch: featureFlags.web,
+                    toolIds: selectedTools,
+                    imageGeneration: featureFlags.image,
+                    codeInterpreter: featureFlags.code,
+                    memory: featureFlags.memory,
                     sessionId: regenSocketSessionId,
                     chatId: regenSocketSessionId != nil ? chatId : nil,
                     messageId: assistantId,
