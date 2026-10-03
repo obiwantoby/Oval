@@ -1569,6 +1569,32 @@ final class AppState {
         var reasoningClosed: Bool = false
         var reasoningDuration: Int? = nil
         var answer: String = ""
+        /// Tool calls the model made this turn, assembled from Responses output items. Rendered
+        /// as a collapsible "console" of each call's arguments and result.
+        var toolCalls: [ToolCallAccum] = []
+
+        struct ToolCallAccum: Equatable {
+            var callId: String
+            var name: String
+            var arguments: String = ""
+            var result: String? = nil
+            var done: Bool = false
+        }
+
+        private mutating func upsertToolCall(callId: String, name: String?, argsReplace: String? = nil, argsAppend: String? = nil, result: String? = nil, done: Bool? = nil) {
+            if let idx = toolCalls.firstIndex(where: { $0.callId == callId }) {
+                if let name, !name.isEmpty { toolCalls[idx].name = name }
+                if let argsReplace { toolCalls[idx].arguments = argsReplace }
+                if let argsAppend { toolCalls[idx].arguments += argsAppend }
+                if let result { toolCalls[idx].result = result }
+                if let done { toolCalls[idx].done = done }
+            } else {
+                toolCalls.append(ToolCallAccum(
+                    callId: callId, name: name ?? "tool",
+                    arguments: argsReplace ?? argsAppend ?? "", result: result, done: done ?? false
+                ))
+            }
+        }
 
         /// Apply one `response:completion` event payload — either a plain
         /// OpenAI chat.completion.chunk delta (role / content / reasoning_content) or a
@@ -1601,21 +1627,48 @@ final class AppState {
                 if !reasoning.isEmpty { reasoningClosed = true }
                 answer += d
                 return true
-            case "response.output_item.done":
-                // A reasoning item finishing carries its measured duration.
+            case "response.output_item.added":
                 guard let item = data["item"] as? [String: Any],
-                      item["type"] as? String == "reasoning" else { return false }
-                reasoningClosed = true
-                if let d = Self.intDuration(item["duration"]) { reasoningDuration = d }
+                      item["type"] as? String == "function_call" else { return false }
+                let cid = (item["call_id"] as? String) ?? (item["id"] as? String) ?? UUID().uuidString
+                upsertToolCall(callId: cid, name: item["name"] as? String,
+                               argsReplace: item["arguments"] as? String, done: false)
                 return true
+            case "response.function_call_arguments.delta":
+                guard let cid = data["item_id"] as? String, let d = data["delta"] as? String else { return false }
+                upsertToolCall(callId: cid, name: nil, argsAppend: d)
+                return true
+            case "response.function_call_arguments.done":
+                guard let cid = data["item_id"] as? String else { return false }
+                upsertToolCall(callId: cid, name: nil, argsReplace: data["arguments"] as? String)
+                return true
+            case "response.output_item.done":
+                guard let item = data["item"] as? [String: Any] else { return false }
+                switch item["type"] as? String {
+                case "reasoning":
+                    reasoningClosed = true
+                    if let d = Self.intDuration(item["duration"]) { reasoningDuration = d }
+                    return true
+                case "function_call":
+                    let cid = (item["call_id"] as? String) ?? (item["id"] as? String) ?? ""
+                    guard !cid.isEmpty else { return false }
+                    upsertToolCall(callId: cid, name: item["name"] as? String,
+                                   argsReplace: item["arguments"] as? String, done: true)
+                    return true
+                case "function_call_output":
+                    let cid = (item["call_id"] as? String) ?? ""
+                    guard !cid.isEmpty else { return false }
+                    upsertToolCall(callId: cid, name: nil, result: Self.outputText(item["output"]), done: true)
+                    return true
+                default:
+                    return false
+                }
             default:
-                // Tool-call items (response.output_item.added / function_call_arguments.*) are
-                // surfaced in a later change; ignore here so the answer still renders.
                 return false
             }
         }
 
-        /// Replace state with the authoritative final `output` array from the terminal
+        /// Merge the authoritative final `output` array from the terminal
         /// `chat:completion {done:true}` event. Returns false if there was nothing usable.
         @discardableResult
         mutating func finalize(output: [[String: Any]]) -> Bool {
@@ -1632,6 +1685,17 @@ final class AppState {
                     if dur == nil { dur = Self.intDuration(item["duration"]) }
                 case "message":
                     answerParts.append(text(of: item))
+                case "function_call":
+                    let cid = (item["call_id"] as? String) ?? (item["id"] as? String) ?? ""
+                    if !cid.isEmpty {
+                        upsertToolCall(callId: cid, name: item["name"] as? String,
+                                       argsReplace: item["arguments"] as? String, done: true)
+                    }
+                case "function_call_output":
+                    let cid = (item["call_id"] as? String) ?? ""
+                    if !cid.isEmpty {
+                        upsertToolCall(callId: cid, name: nil, result: Self.outputText(item["output"]), done: true)
+                    }
                 default:
                     break
                 }
@@ -1640,14 +1704,14 @@ final class AppState {
             // `message` items are interleaved with tool calls across rounds; earlier ones are
             // often just whitespace preambles, so drop leading blank lines from the joined answer.
             let a = String(answerParts.joined().drop(while: { $0 == "\n" || $0 == " " }))
-            guard !r.isEmpty || !a.isEmpty else { return false }
+            guard !r.isEmpty || !a.isEmpty || !toolCalls.isEmpty else { return false }
             reasoning = r; reasoningClosed = true; reasoningDuration = dur; answer = a
             return true
         }
 
-        /// Render to a displayed content string using the `<details type="reasoning">`
-        /// convention the message renderer already understands. An unclosed block renders as
-        /// an animated "Thinking…"; a closed one as "Thought for N seconds".
+        /// Render to a displayed content string the message renderer already understands:
+        /// reasoning as a `<details type="reasoning">` block, each tool call as a
+        /// `<details type="tool_calls">` block (shown by ToolCallView), then the answer.
         func render() -> String {
             var s = ""
             if !reasoning.isEmpty {
@@ -1659,6 +1723,13 @@ final class AppState {
                     s += "<details type=\"reasoning\">\n\(reasoning)"
                 }
             }
+            for tc in toolCalls {
+                var attrs = " id=\"\(Self.htmlEncode(tc.callId))\" name=\"\(Self.htmlEncode(tc.name))\""
+                attrs += " arguments=\"\(Self.htmlEncode(tc.arguments))\""
+                if let r = tc.result { attrs += " result=\"\(Self.htmlEncode(r))\"" }
+                attrs += tc.done ? " done=\"true\"" : " done=\"false\""
+                s += "<details type=\"tool_calls\"\(attrs)><summary>Tool</summary></details>\n"
+            }
             s += answer
             return s
         }
@@ -1667,6 +1738,26 @@ final class AppState {
             if let i = v as? Int { return i }
             if let d = v as? Double { return Int(d) }
             return nil
+        }
+
+        /// Flatten a Responses `function_call_output` `output` value (usually
+        /// `[{type:"input_text", text:"..."}]`, sometimes a plain string) into display text.
+        private static func outputText(_ v: Any?) -> String? {
+            if let s = v as? String { return s }
+            if let arr = v as? [[String: Any]] {
+                let joined = arr.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                return joined.isEmpty ? nil : joined
+            }
+            return nil
+        }
+
+        /// Encode a value for embedding in an HTML attribute (matches parseToolCallDetails).
+        private static func htmlEncode(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+                .replacingOccurrences(of: "\"", with: "&quot;")
+                .replacingOccurrences(of: "'", with: "&#39;")
         }
     }
 
