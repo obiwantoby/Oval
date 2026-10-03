@@ -103,4 +103,37 @@ struct ResponsesStreamStateTests {
         let ok = s.finalize(output: [])
         #expect(ok == false)
     }
+
+    @Test("tool call events render as a tool_calls block with args and result")
+    func toolCallConsole() {
+        var s = State()
+        s.apply(event: ["type": "response.output_item.added",
+                        "item": ["type": "function_call", "call_id": "c1", "name": "kagi_search", "arguments": ""]] as [String: Any])
+        s.apply(event: ["type": "response.function_call_arguments.delta",
+                        "item_id": "c1", "delta": "{\"query\":\"tokyo\"}"] as [String: Any])
+        s.apply(event: ["type": "response.output_item.done",
+                        "item": ["type": "function_call", "call_id": "c1", "name": "kagi_search", "arguments": "{\"query\":\"tokyo\"}"]] as [String: Any])
+        s.apply(event: ["type": "response.output_item.done",
+                        "item": ["type": "function_call_output", "call_id": "c1", "output": [["type": "input_text", "text": "pop 14M"]]]] as [String: Any])
+        let r = s.render()
+        #expect(r.contains("type=\"tool_calls\""))
+        #expect(r.contains("name=\"kagi_search\""))
+        #expect(r.contains("tokyo"))
+        #expect(r.contains("pop 14M"))
+        #expect(r.contains("done=\"true\""))
+    }
+
+    @Test("rendered tool_calls block round-trips through parseToolCallDetails")
+    func toolCallRoundTrip() {
+        var s = State()
+        s.apply(event: ["type": "response.output_item.added",
+                        "item": ["type": "function_call", "call_id": "c1", "name": "kagi_search", "arguments": "{\"query\":\"tokyo\"}"]] as [String: Any])
+        s.apply(event: ["type": "response.output_item.done",
+                        "item": ["type": "function_call_output", "call_id": "c1", "output": "result text"]] as [String: Any])
+        let parsed = AppState.parseToolCallDetails(from: s.render())
+        #expect(parsed.count == 1)
+        #expect(parsed.first?.function.name == "kagi_search")
+        #expect(parsed.first?.function.arguments.contains("tokyo") == true)
+        #expect(parsed.first?.result == "result text")
+    }
 }
