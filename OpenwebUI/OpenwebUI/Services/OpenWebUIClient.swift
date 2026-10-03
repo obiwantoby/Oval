@@ -408,6 +408,10 @@ final class OpenWebUIClient: Sendable {
                         }
 
                         var lineBuffer = Data()
+                        // Tracks whether we're inside an open `<details type="reasoning">` block
+                        // synthesized from `reasoning_content` deltas (reasoning models stream
+                        // their chain-of-thought in a separate field on the raw SSE path).
+                        var reasoningOpen = false
                         for try await byte in bytes {
                             if byte == UInt8(ascii: "\n") {
                                 // Decode the accumulated line (lossy: replaces bad bytes with U+FFFD)
@@ -433,7 +437,22 @@ final class OpenWebUIClient: Sendable {
                                 }
 
                                 if let delta = chunk.choices?.first?.delta {
-                                    if let content = delta.content {
+                                    // Reasoning deltas → wrap in a `<details type="reasoning">`
+                                    // block so the message renderer shows them as a thinking
+                                    // block (same convention as the Socket.IO path).
+                                    if let rc = delta.reasoning_content, !rc.isEmpty {
+                                        if !reasoningOpen {
+                                            continuation.yield(.content("<details type=\"reasoning\">\n"))
+                                            reasoningOpen = true
+                                        }
+                                        continuation.yield(.content(rc))
+                                    }
+                                    if let content = delta.content, !content.isEmpty {
+                                        // First answer token closes the reasoning block.
+                                        if reasoningOpen {
+                                            continuation.yield(.content("\n</details>\n\n"))
+                                            reasoningOpen = false
+                                        }
                                         continuation.yield(.content(content))
                                     }
                                     if let toolCalls = delta.tool_calls {
@@ -448,6 +467,10 @@ final class OpenWebUIClient: Sendable {
                             }
                         }
 
+                        // Close a reasoning block that never saw an answer token (edge case).
+                        if reasoningOpen {
+                            continuation.yield(.content("\n</details>\n\n"))
+                        }
                         continuation.yield(.done)
                         continuation.finish()
                     }

@@ -734,6 +734,9 @@ struct ChunkDelta: Codable {
     let content: String?
     let role: String?
     let tool_calls: [ToolCallChunk]?
+    /// Chain-of-thought stream used by reasoning models (DeepSeek-R1 / Qwen / vLLM style).
+    /// Delivered on the raw SSE path separately from `content`.
+    let reasoning_content: String?
 }
 
 // MARK: - Tool Calling
